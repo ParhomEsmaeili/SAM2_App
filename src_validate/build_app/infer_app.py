@@ -286,10 +286,6 @@ class InferApp:
         
         if self.model.training:
             raise Exception('The model must be in eval mode for inference')
-        
-        self.app_params.update({'image_size': (self.model.image_size, self.model.image_size)}) 
-
-
 
         self.build_inference_apps()
 
@@ -358,6 +354,20 @@ class InferApp:
             max_hole_area=self.max_hole_area,
             max_sprinkle_area=self.max_sprinkle_area
         )
+
+        #Pushing the parameters for the app configuration through for saving in the validation logs:
+
+                
+        self.app_params.update({
+            'image_size': (self.model.image_size, self.model.image_size),
+            'autoseg_infer_bool': self.autoseg_infer,
+            'static_bbox': self.static_bbox,
+            'prop_freeform_prompts_uniformly': self.prop_freeform_uniformly,
+            'multi_ambig_mask_always': self.multimask_output_always,
+            'permitted_prompts': self.permitted_prompts,
+            'backbone_f_map_sizes': self._bb_feat_sizes
+            }) 
+
 
     def app_configs(self):
         #STRONGLY Recommended: A method which returns any configuration specific information for printing to the logfile. Expects a dictionary format.
