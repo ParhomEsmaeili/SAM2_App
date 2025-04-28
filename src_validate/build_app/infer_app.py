@@ -332,6 +332,8 @@ class InferApp:
         ###########################################################################################
         #Setting some parameters for the preprocessing, and postprocessing of the image and predictions. 
 
+        self.clip_lower_bound = 0.5
+        self.clip_upper_bound = 99.5 #These are the parameters for performing the intensity quantile clipping prior to z score normalisation.
 
         #Self.model._image_size = 1024 (1024 x 1024).
         self.mask_threshold_logits = 0 #Demo value: This mask threshold is for the binarisation of a logits map, ergo...
@@ -365,7 +367,14 @@ class InferApp:
             'prop_freeform_prompts_uniformly': self.prop_freeform_uniformly,
             'multi_ambig_mask_always': self.multimask_output_always,
             'permitted_prompts': self.permitted_prompts,
-            'backbone_f_map_sizes': self._bb_feat_sizes
+            'backbone_f_map_sizes': self._bb_feat_sizes,
+            'intensity_lower_quantile': self.clip_lower_bound,
+            'intensity_upper_quantile': self.clip_upper_bound,
+            'max_sprinkle_area': self.max_sprinkle_area,
+            'max_hole_area': self.max_hole_area,
+            'logits_thresh': self.mask_threshold_logits,
+            'prob_thresh': self.mask_threshold_sigmoid, 
+            'sanity_check_slice': self.sanity_slice_check
             }) 
 
 
@@ -587,7 +596,7 @@ class InferApp:
                 else:
                     raise Exception('Cannot have more than three spatial dimensions for indexing the slices, we only permit 3D volumes at most!')
                 try:
-                    lower_bound, upper_bound = np.percentile(slice[slice > 0], 0.5), np.percentile(slice[slice > 0], 99.5) 
+                    lower_bound, upper_bound = np.percentile(slice[slice > 0], self.clip_lower_bound), np.percentile(slice[slice > 0], self.clip_upper_bound) 
                 except:
                     lower_bound, upper_bound = 0, 0
 
@@ -1032,7 +1041,7 @@ class InferApp:
                         self.internal_lowres_mask_storage[ax][slice_idx] = lowres_masks
                         #We keep the actual upsampled logits prediction separate by following the convention in the demo to use the lowres mask for forward propagation.
                         prob_outputs = torch.sigmoid(logits_outputs)
-                        discrete_outputs = (prob_outputs > 0.5).long()
+                        discrete_outputs = (prob_outputs > self.mask_threshold_sigmoid).long()
                     else:
                         #In the case where we do not actually perform autoseg inference, but just "skip over" and also pass a NoneType for future iterations such that
                         #the inference is not conditioned on a potentially sparse mask, but rather as though it is starting fresh.
@@ -1045,7 +1054,7 @@ class InferApp:
                         self.internal_lowres_mask_storage[ax][slice_idx] = lowres_masks  
                         #We keep these two separate by following the convention in the demo to use the lowres map for forward propagation.
                         prob_outputs = torch.sigmoid(logits_outputs).to(device=self.infer_device)
-                        discrete_outputs = (prob_outputs > 0.5).long()
+                        discrete_outputs = (prob_outputs > self.mask_threshold_sigmoid).long()
                 else:
                     #In this case we have prompts, we split our next operations between points & scribbles, and bboxes (as we treat scribbles as sets of points)
                     # 
@@ -1141,14 +1150,14 @@ class InferApp:
                     if multi_box_bool is not None and not multi_box_bool:
                         #Single box, pretty straight forward to evaluate this.
                         prob_outputs = torch.sigmoid(logits_outputs)
-                        discrete_outputs = (prob_outputs > 0.5).long()
+                        discrete_outputs = (prob_outputs > self.mask_threshold_sigmoid).long()
                     elif multi_box_bool is not None and multi_box_bool:
                         mask_dim = 0 #This mask refers to the batchwise dim, not the multi-pred masks.
                         if not logits_outputs.shape[mask_dim] > 1:
                             raise Exception(f'We implemented this wrong, the mask dimension from output indicates that 1 or fewer bboxes were used but we are in the handling for multiple bboxes')
                         #Multiple box, we take a naive approach for handling the probabilistic map output, we take max over all channels as it is a single foreground!
                         box_sep_prob_outputs = torch.sigmoid(logits_outputs)
-                        discrete_outputs = (box_sep_prob_outputs > 0.5).long()
+                        discrete_outputs = (box_sep_prob_outputs > self.mask_threshold_sigmoid).long()
                         #We reduce over the 0th dimension corresponding to the quantity of prompts which are treated as distinct object instances (i.e. for each bbox).
                         discrete_outputs = (discrete_outputs.sum(dim=mask_dim, keepdim=True) > 0).long() #We sum over the mask dim, then binarise as we assume each instance is
                         #an instance of the given foreground class (and we are performing semantic segmentation)
@@ -1161,7 +1170,7 @@ class InferApp:
                             raise Exception('Should not have flagged box as being NoneType if there were boxes.')
                         #For non-box prompt types, we have little to worry about, it doesn't treat each prompt as a separate instance..
                         prob_outputs = torch.sigmoid(logits_outputs)
-                        discrete_outputs = (prob_outputs > 0.5).long()
+                        discrete_outputs = (prob_outputs > self.mask_threshold_sigmoid).long()
             
                 #Storing the output maps, first we check that the shapes are consistent with what is required, ESPECIALLY for the channel dimensions:
                 #we reverse the list because the input dom shapes are extracted prior to the transposition required for mapping from RAS to y,x cv2 coordinates.
