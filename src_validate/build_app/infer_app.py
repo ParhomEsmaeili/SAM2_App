@@ -30,7 +30,8 @@ import warnings
 import logging
 import gc 
 ############################# Adding a path to the checkpoint in order to check whether a checkpoint is available, or for storage of a downloaded checkpoint. 
-ckpt_dir = os.path.join(os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'ckpt')
+app_local_path = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+ckpt_dir = os.path.join(app_local_path, 'ckpt')
 
 
 
@@ -242,7 +243,7 @@ def build_sam2_hf(model_id, device, **kwargs): #Slight modification to return so
 
 class InferApp:
  
-    def __init__(self, dataset_info, infer_device):
+    def __init__(self, infer_device):
         
         self.sanity_check = False #True
         self.sanity_slice_check = 39
@@ -251,7 +252,6 @@ class InferApp:
         #Some hardcoded params only for performing a sanity check on mapping the input image domain to the domain expected by the model.
 
         ############ Initialising the inference application #####################
-        self.dataset_info = dataset_info
         self.infer_device = infer_device
 
         if self.infer_device.type != "cuda":
@@ -427,24 +427,16 @@ class InferApp:
     
     def binary_subject_prep(self, request:dict):
         
-        #Here we perform some actions for determining the state of the infer call for adjusting some of our info extraction mechanisms.
-         
-        #Ordering the set of interaction states provided, first check if there is an initialisation: if so, place that first. 
-        im_order = [] 
-        init_modes  = {'Automatic Init', 'Interactive Init'}
-        edit_names_list = list(set(request['im']).difference(init_modes))
+        self.dataset_info = request['dataset_info']
+        if len(self.dataset_info['task_channels']) < 1 or len(self.dataset_info['task_channels']) > 3:
+            raise Exception('The current inference app requires at least one image channel, but can only support up to three channels as input.')
 
-        #Sorting this list.
-        edit_names_list.sort(key=lambda test_str : list(map(int, re.findall(r'\d+', test_str))))
-
-        #Extending the ordered list. 
+        #TODO: Add multi-channel support for segmentation in the inference app.
+        if len(self.dataset_info['task_channels']) != 1:
+            raise Exception('The current inference app only supports single channel images for segmentation.')
         
-        im_order.extend(edit_names_list) 
-        #Loading the image and prompts in the input-im domain & the zoom-out domain.
-        
-        if request['model'] == 'IS_interactive_edit':
-            key = edit_names_list[-1]
-            is_state = request['im'][key]
+        if request['infer_mode'] == 'IS_interactive_edit':
+            is_state = request['i_state']
             if all([i is None for i in is_state['interaction_torch_format']['interactions'].values()]) or all([i is None for i in is_state['interaction_torch_format']['interactions_labels'].values()]):
                 raise Exception('Cannot be an interactive request without interactive inputs.')
             init = False 
@@ -457,9 +449,8 @@ class InferApp:
             assert isinstance(self.model_prompts_storage_dict, dict) and self.model_prompts_storage_dict #Just asserting that these are dicts and also non-empty.
             assert isinstance(self.box_prompted_slices, dict) and self.box_prompted_slices 
 
-        elif request['model'] == 'IS_interactive_init':
-            key = 'Interactive Init' 
-            is_state = request['im'][key]
+        elif request['infer_mode'] == 'IS_interactive_init':
+            is_state = request['i_state']
             if all([i is None for i in is_state['interaction_torch_format']['interactions'].values()]) or all([i is None for i in is_state['interaction_torch_format']['interactions_labels'].values()]):
                 raise Exception('Cannot be an interactive request without interactive inputs.')
             init = True 
@@ -489,37 +480,36 @@ class InferApp:
             self.orig_prompts_storage_dict = dict()
             self.model_prompts_storage_dict = dict()
 
-        elif request['model'] == 'IS_autoseg':
-            key = 'Automatic Init'
-            is_state = request['im'][key]
+        elif request['infer_mode'] == 'IS_autoseg':
+            is_state = request['i_state']
             if is_state is not None:
                 raise Exception('Autoseg should not have any interaction info.')
             init = True 
             
             raise Exception('True Autoseg is too OOD for this algorithm (i.e. not the S.A.T but truly without any prompts)')
-            try:
-                del self.image_features_dict
-                del self.internal_lowres_mask_storage
-                del self.internal_discrete_output_mask_storage
-                del self.internal_prob_output_mask_storage
-                del self.orig_prompts_storage_dict
-                del self.model_prompts_storage_dict
+            # try:
+            #     del self.image_features_dict
+            #     del self.internal_lowres_mask_storage
+            #     del self.internal_discrete_output_mask_storage
+            #     del self.internal_prob_output_mask_storage
+            #     del self.orig_prompts_storage_dict
+            #     del self.model_prompts_storage_dict
                 
-                torch.cuda.empty_cache() #We clear cache for each new case because image sizes can have variance! 
-            except:
-                pass #HACK: Not a good solution but want to clear the cached memory while keeping the script "online".
+            #     torch.cuda.empty_cache() #We clear cache for each new case because image sizes can have variance! 
+            # except:
+            #     pass #HACK: Not a good solution but want to clear the cached memory while keeping the script "online".
 
-            self.image_features_dict = dict()
-            self.internal_lowres_mask_storage = dict() #This is in the model domain!
-            self.internal_discrete_output_mask_storage = dict() #This is in the cv2 coordinate system, 
-            #but otherwise in the domain at the slice level of the image (i.e., same dimensions for the corresponding coordinate axes, just flipped.)
-            self.internal_prob_output_mask_storage = dict() #This is in the cv2 coordinate system, 
-            #but otherwise in the domain at the slice level of the image (i.e., same dimensions for the corresponding coordinate axes, just flipped.)
+            # self.image_features_dict = dict()
+            # self.internal_lowres_mask_storage = dict() #This is in the model domain!
+            # self.internal_discrete_output_mask_storage = dict() #This is in the cv2 coordinate system, 
+            # #but otherwise in the domain at the slice level of the image (i.e., same dimensions for the corresponding coordinate axes, just flipped.)
+            # self.internal_prob_output_mask_storage = dict() #This is in the cv2 coordinate system, 
+            # #but otherwise in the domain at the slice level of the image (i.e., same dimensions for the corresponding coordinate axes, just flipped.)
             
-            self.box_prompted_slices = dict() #Stores the set of slices which have been box-prompted already, this is relevant for the bbox placement as it will be assumed
-            #that in cases where it is static, that incoming bbox prompts will be cross-examined accordingly.
-            self.orig_prompts_storage_dict = dict()
-            self.model_prompts_storage_dict = dict() 
+            # self.box_prompted_slices = dict() #Stores the set of slices which have been box-prompted already, this is relevant for the bbox placement as it will be assumed
+            # #that in cases where it is static, that incoming bbox prompts will be cross-examined accordingly.
+            # self.orig_prompts_storage_dict = dict()
+            # self.model_prompts_storage_dict = dict() 
         #Mapping image and prompts to the model's coordinate space. NOTE: In order to disentangle the validation framework from inference apps 
         # this is always assumed to be handled within the inference app.
 
@@ -624,7 +614,7 @@ class InferApp:
 
                 #If it is not CT (i.e. values won't be negative), then we can use the positive voxels to calculate intensity
                 #statistics. This is the most "standard" approach.
-                if self.dataset_info['task_channel'][0] == 'CT':
+                if self.dataset_info['task_channels'][0] == 'CT':
                     lower_bound, upper_bound = np.percentile(input_dom_im_backend, self.clip_lower_bound), np.percentile(input_dom_im_backend, self.clip_upper_bound)
                 else:
                     #Else, will use the positive voxels.
@@ -1383,6 +1373,8 @@ class InferApp:
         if mask_input is not None and mask_input.shape[0] > 1: #In this case the mask has been pre-initialised with a set of bboxes to obtain instance-level masks.
             if concat_points[0].shape[0] != mask_input.shape[0]: 
                 raise Exception('The instance count/batch-dim cannot be inconsistent between the prompts and the masks post-bbox initialisation/instance-level initialisation.')
+            else:
+                mask_input = mask_input.to(device=self.infer_device) #In this case, we just ensure that the mask is on the correct device.
         elif mask_input is not None and mask_input.shape[0] == 1:
             if concat_points[0].shape[0] != mask_input.shape[0]:
                 #In this case, we had a singular previous mask, and if we have a batch-dim/instance count > 1, then we need to distribute the mask. This can happen if
@@ -1545,7 +1537,7 @@ class InferApp:
         #We create a duplicate so we can transform the data from metatensor format to the torch tensor format compatible with the inference script.
         modif_request = copy.deepcopy(request) 
 
-        app = self.infer_apps[modif_request['model']][f'{class_type}_predict']
+        app = self.infer_apps[modif_request['infer_mode']][f'{class_type}_predict']
 
         #Setting the configs label dictionary for this inference request.
         self.configs_labels_dict = modif_request['config_labels_dict']
@@ -1561,7 +1553,7 @@ class InferApp:
 
         assert probs_tensor.shape[1:] == request['image']['metatensor'].shape[1:]
         assert pred.shape[1:] == request['image']['metatensor'].shape[1:] 
-        assert torch.all(affine == request['image']['metatensor'].meta['affine'])
+        assert torch.all(affine == request['image']['meta_dict']['affine'])
         assert isinstance(probs_tensor, torch.Tensor) 
         assert isinstance(pred, torch.Tensor)
         assert isinstance(affine, torch.Tensor)
@@ -1589,147 +1581,103 @@ class InferApp:
 if __name__ == '__main__':
    
     infer_app = InferApp(
-        {'dataset_name':'BraTS2021',
-        'dataset_modality':'MRI'}, torch.device('cuda', index=0))
+        torch.device('cuda', index=0)
+        )
 
     infer_app.app_configs()
 
     from monai.transforms import LoadImaged, Orientationd, EnsureChannelFirstd, Compose 
     import nibabel as nib 
 
-    input_dict = {'image':'/home/parhomesmaeili/IS-Validation-Framework/IS_Validate/datasets/BraTS2021_Training_Data_Split_True_proportion_0.8_channels_t2_resized_FLIRT_binarised/imagesTs/BraTS2021_00266.nii.gz'}
+    input_dict = {
+        'image':os.path.join(app_local_path, 'debug_image/BraTS2021_00266.nii.gz')}
     load_and_transf = Compose([LoadImaged(keys=['image']), EnsureChannelFirstd(keys=['image']), Orientationd(keys=['image'], axcodes='RAS')])
-
-    input_metatensor = load_and_transf(input_dict)
+    
+    loaded_im = load_and_transf(input_dict)
+    original_affine = loaded_im['image'].meta['original_affine']
+    affine = loaded_im['image'].meta['affine'] 
+    original_affine = copy.deepcopy(torch.from_numpy(original_affine).to(dtype=torch.float64)) if type(original_affine) is np.ndarray else copy.deepcopy(original_affine.to(dtype=torch.float64))
+    affine = copy.deepcopy(torch.from_numpy(affine).to(dtype=torch.float64)) if type(affine) is np.ndarray else copy.deepcopy(affine.to(dtype=torch.float64))
+    
+    meta = {
+        'original_affine': original_affine, 
+        'affine': affine
+        }
+    final_loaded_im = torch.from_numpy(loaded_im['image'].clone().detach().numpy())
+    
     request = {
         'image':{
-            'metatensor': input_metatensor['image'],
-            'meta_dict':{'affine':input_metatensor['image'].affine}
+            'metatensor': final_loaded_im,
+            'meta_dict':meta,
         },
-        'model':'IS_interactive_init',
-        # 'model': 'IS_autoseg',
+        'infer_mode':'IS_interactive_init',
         'config_labels_dict':{'background':0, 'tumor':1},
-        'im':
-        # {'Automatic Init': None},
-        {'Interactive Init':{
-            'interaction_torch_format': {
-                'interactions': {
-                    'points': None, #[torch.tensor([[40, 103, 43]]), torch.tensor([[62, 62, 39]]), torch.tensor([[61, 62, 39]]), torch.tensor([[80,35,39]]), torch.tensor([[81,35,39]])], #None
-                    'scribbles': None, #[torch.tensor([[63,62,39], [64,62,39],[65,62,39]])],#, torch.tensor([[73,62,39], [74,62,39],[75,62,39]])], 
-                    #This second scribble is a fugazi but intended just for sanity checking the mapping.
-                    'bboxes': [torch.Tensor([[56,30,17, 92, 76, 51]]).to(dtype=torch.int64), torch.Tensor([[93,80,30, 105, 100, 51]]).to(dtype=torch.int64)]  #None 
-                    },#This second box is a fugazi but intended just for sanity checking that the multi-box method works. 17-51 should be the real bounds.
-                'interactions_labels': {
-                    'points_labels': None, #[torch.tensor([0]), torch.tensor([1]), torch.tensor([1]), torch.tensor([0]), torch.tensor([0])], #None,
-                    'scribbles_labels':None, #[torch.tensor([1])],#, torch.tensor([0])],  
-                    'bboxes_labels': [torch.Tensor([1]).to(dtype=torch.int64), torch.Tensor([1]).to(dtype=torch.int64)] #None
-                    },
-                }
-            }
+        'dataset_info':{
+            'dataset_name':'BraTS2021_t2',
+            'dataset_image_channels': {            
+                "T2w": "0"
+            },
+            'task_channels': ["T2w"]
+        },
+        'i_state':
+        {
+        'interaction_torch_format': {
+            'interactions': {
+                'points': None,
+                'scribbles': None,
+                'bboxes': [torch.Tensor([[56,30,17, 92, 76, 51]]).to(dtype=torch.int64), torch.Tensor([[93,80,30, 105, 100, 51]]).to(dtype=torch.int64)]  #None 
+                },#This second box is fake but intended just for debugging how the multi-box method works. 17-51 in I-S plane would be the real bounds.
+            'interactions_labels': {
+                'points_labels': None,
+                'scribbles_labels':None, 
+                'bboxes_labels': [torch.Tensor([1]).to(dtype=torch.int64), torch.Tensor([1]).to(dtype=torch.int64)]
+                },
+            },
+        'interaction_dict_format': {
+            'points': None,
+            'scribbles': None,
+            'bboxes': {'background': [], 'tumor': [[56,30,17, 92, 76, 51], [93,80,65, 105, 100, 65]]}
+            }, 
+        
         },
     }
     output = infer_app(request)
     # print('halt')
-
-
-
     request2 = {
         'image':{
-            'metatensor': input_metatensor['image'],
-            'meta_dict':{'affine':input_metatensor['image'].affine}
+            'metatensor': final_loaded_im,
+            'meta_dict':meta, 
         },
-        'model':'IS_interactive_edit',
+        'infer_mode':'IS_interactive_edit',
         'config_labels_dict':{'background':0, 'tumor':1},
-        'im':
-        {'Interactive Edit Iter 1':{
+        'dataset_info':{
+            'dataset_name':'BraTS2021_t2',
+            'dataset_image_channels': {            
+                "T2w": "0"
+            },
+            'task_channels': ["T2w"]
+        },
+        'i_state':
+        {   
             'interaction_torch_format': {
                 'interactions': {
-                    'points': [torch.tensor([[62, 62, 57]]), torch.tensor([[61, 62, 39]])], #None
-                    'scribbles': None, #[torch.tensor([[63,62,39], [64,62,39],[65,62,39]])],#, torch.tensor([[73,62,57], [74,62,57],[75,62,57]])], 
-                    #This second scribble is a fugazi but intended just for sanity checking the mapping.
-                    'bboxes': [torch.Tensor([[56,30,5, 92, 76, 15]]).to(dtype=torch.int64), torch.Tensor([[93,80,65, 105, 100, 65]]).to(dtype=torch.int64)]  #None 
-                    },#This second box is a fugazi but intended just for sanity checking that the multi-box method works. 17-51 should be the real bounds.
-                'interactions_labels': {
-                    'points_labels': [torch.tensor([1]), torch.tensor([0])], #None,#[torch.tensor([0]), torch.tensor([1])], 
-                    'scribbles_labels':None, #[torch.tensor([1])],#, torch.tensor([0])],  
-                    'bboxes_labels': [torch.Tensor([1]).to(dtype=torch.int64), torch.Tensor([1]).to(dtype=torch.int64)] #None
-                    }
-                },
-            }
-        },
-    }
-
-    output2 = infer_app(request2)
-    print('halt')
-   
-    infer_app = InferApp(
-        {'dataset_name':'BraTS2021',
-        'dataset_modality':'MRI'}, torch.device('cuda', index=0))
-
-    infer_app.app_configs()
-
-    from monai.transforms import LoadImaged, Orientationd, EnsureChannelFirstd, Compose 
-    import nibabel as nib 
-
-    input_dict = {'image':'/home/parhomesmaeili/IS-Validation-Framework/IS_Validate/datasets/BraTS2021_Training_Data_Split_True_proportion_0.8_channels_t2_resized_FLIRT_binarised/imagesTs/BraTS2021_00266.nii.gz'}
-    load_and_transf = Compose([LoadImaged(keys=['image']), EnsureChannelFirstd(keys=['image']), Orientationd(keys=['image'], axcodes='RAS')])
-
-    input_metatensor = load_and_transf(input_dict)
-    request = {
-        'image':{
-            'metatensor': input_metatensor['image'],
-            'meta_dict':{'affine':input_metatensor['image'].affine}
-        },
-        'model':'IS_interactive_init',
-        # 'model': 'IS_autoseg',
-        'config_labels_dict':{'background':0, 'tumor':1},
-        'im':
-        # {'Automatic Init': None},
-        {'Interactive Init':{
-            'interaction_torch_format': {
-                'interactions': {
-                    'points': None, #[torch.tensor([[40, 103, 43]]), torch.tensor([[62, 62, 39]]), torch.tensor([[61, 62, 39]]), torch.tensor([[80,35,39]]), torch.tensor([[81,35,39]])], #None
-                    'scribbles': None, #[torch.tensor([[63,62,39], [64,62,39],[65,62,39]])],#, torch.tensor([[73,62,39], [74,62,39],[75,62,39]])], 
-                    #This second scribble is a fugazi but intended just for sanity checking the mapping.
+                    'points': [torch.tensor([[62, 62, 57]]), torch.tensor([[61, 62, 39]])],
+                    'scribbles': None,
                     'bboxes': [torch.Tensor([[56,30,17, 92, 76, 51]]).to(dtype=torch.int64), torch.Tensor([[93,80,30, 105, 100, 51]]).to(dtype=torch.int64)]  #None 
-                    },#This second box is a fugazi but intended just for sanity checking that the multi-box method works. 17-51 should be the real bounds.
+                    },#This second box is fake but just for sanity checking that the multi-box method works. 17-51 should be the real bounds.
                 'interactions_labels': {
-                    'points_labels': None, #[torch.tensor([0]), torch.tensor([1]), torch.tensor([1]), torch.tensor([0]), torch.tensor([0])], #None,
-                    'scribbles_labels':None, #[torch.tensor([1])],#, torch.tensor([0])],  
-                    'bboxes_labels': [torch.Tensor([1]).to(dtype=torch.int64), torch.Tensor([1]).to(dtype=torch.int64)] #None
-                    },
-                }
-            }
-        },
-    }
-    output = infer_app(request)
-    # print('halt')
-
-
-
-    request2 = {
-        'image':{
-            'metatensor': input_metatensor['image'],
-            'meta_dict':{'affine':input_metatensor['image'].affine}
-        },
-        'model':'IS_interactive_edit',
-        'config_labels_dict':{'background':0, 'tumor':1},
-        'im':
-        {'Interactive Edit Iter 1':{
-            'interaction_torch_format': {
-                'interactions': {
-                    'points': [torch.tensor([[62, 62, 57]]), torch.tensor([[61, 62, 39]])], #None
-                    'scribbles': None, #[torch.tensor([[63,62,39], [64,62,39],[65,62,39]])],#, torch.tensor([[73,62,57], [74,62,57],[75,62,57]])], 
-                    #This second scribble is a fugazi but intended just for sanity checking the mapping.
-                    'bboxes': [torch.Tensor([[56,30,5, 92, 76, 15]]).to(dtype=torch.int64), torch.Tensor([[93,80,65, 105, 100, 65]]).to(dtype=torch.int64)]  #None 
-                    },#This second box is a fugazi but intended just for sanity checking that the multi-box method works. 17-51 should be the real bounds.
-                'interactions_labels': {
-                    'points_labels': [torch.tensor([1]), torch.tensor([0])], #None,#[torch.tensor([0]), torch.tensor([1])], 
-                    'scribbles_labels':None, #[torch.tensor([1])],#, torch.tensor([0])],  
-                    'bboxes_labels': [torch.Tensor([1]).to(dtype=torch.int64), torch.Tensor([1]).to(dtype=torch.int64)] #None
+                    'points_labels': [torch.tensor([1]), torch.tensor([0])],
+                    'scribbles_labels':None, 
+                    'bboxes_labels': [torch.Tensor([1]).to(dtype=torch.int64), torch.Tensor([1]).to(dtype=torch.int64)]
                     }
-                },
-            }
+            },
+            'interaction_dict_format': {
+                'points': {'background': [],
+                'tumor': [[61,62,39],[62, 62, 39]]
+                    },
+                'scribbles': None,
+                'bboxes': {'background': [], 'tumor': [[56,30,17, 92, 76, 51], [93,80,17,105,100,51]]}
+            },
         },
     }
 
