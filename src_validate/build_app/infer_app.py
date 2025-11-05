@@ -720,19 +720,19 @@ class InferApp:
 
             self.image_features_dict[ax] = axis_embeddings 
         
-        #HACK: Trying to minimise VRAM use. 
-        vision_feats = [i.to('cpu') for i in vision_feats]
+        # vision_feats = [i.to('cpu') for i in vision_feats]
         #Don't think deleting this here will make a difference because there is a reference so it won't free the memory...
         # but heres to hoping for now. 
-        del feats 
-        del vision_feats
+        # del feats 
+        # del vision_feats
         #Maybe this one will work? 
-        del im_slices_model_dom
+        # del im_slices_model_dom
         #This is a hack to try and release the memory, not sure if it will work, but worth a try.
-        gc.collect()
+        # gc.collect()
+
+        #We removed a lot of these operations as they are either 1) not doing anything, or 2) not worth the
+        # time cost compared to the memory freed. Most of the operations are not freeing memory anyways. 
         torch.cuda.empty_cache() 
-        #Honestly not sure whether moving no_mem_embed to cpu and emptying cache will break the model. Lets just deal with the others.
-        #Its pretty miniscule anyways.... : 1024 bytes
         logging.info("Image embeddings computed.")
 
 
@@ -1118,7 +1118,7 @@ class InferApp:
 
                         #In this case, we return a tensor of -1000 for the output as this will eval to 0s at the floating point precision for the prob map under 
                         # sigmoid. Internally store a different mask variable, a Nonetype (i.e., it will treat that first interaction instance as an init..)
-                        logits_outputs, lowres_masks = -1000 * torch.ones([1,1] + self.input_dom_shapes[ax][::-1].tolist()) , None
+                        logits_outputs, lowres_masks = (-1000 * torch.ones([1,1] + self.input_dom_shapes[ax][::-1].tolist())).cuda() , None
                         if not torch.all(torch.sigmoid(logits_outputs) == 0):
                             raise Exception('Error with the strategy for generating p = 0 maps.')
                         self.internal_lowres_mask_storage[ax][slice_idx] = lowres_masks#.to(torch.float32)
@@ -1466,10 +1466,13 @@ class InferApp:
             mask_input = mask_input.to(device='cpu')
         image_embeddings = image_embeddings.to(device='cpu')
         iou_predictions = iou_predictions.to(device='cpu')
-        low_res_masks = low_res_masks.to(device='cpu')
-        masks = masks.to(device='cpu')
         sparse_embeddings = sparse_embeddings.to(device='cpu')
         dense_embeddings = dense_embeddings.to(device='cpu')
+
+        # low_res_masks = low_res_masks.to(device='cpu')
+        # masks = masks.to(device='cpu') #WE remove these from being allocated to CPU so that it accelerates the
+        #3D mask generation process downstream.
+
 
         #Pretty sure just deleting and then gc collecting would help me empty cache for cpu and gpu but just err on the side of caution.
         del mask_input
@@ -1477,8 +1480,8 @@ class InferApp:
         del image_embeddings 
         del sparse_embeddings
         del dense_embeddings 
-        gc.collect()
-        torch.cuda.empty_cache() 
+        # gc.collect() #Not making any difference to VRAM or RAM usage, so remove it. Just a slowdown.
+        # torch.cuda.empty_cache() 
 
         return masks, iou_predictions, low_res_masks
 
@@ -1499,7 +1502,6 @@ class InferApp:
 
         if not len(self.app_params['image_axes']) == 1:
             raise Exception('Cannot merge together slices in multiple axes with a simple concatenation')
-        
 
         for ax in self.app_params['image_axes']:
             merged_discrete = torch.cat([(mask.T).unsqueeze(dim=ax) for mask in self.internal_discrete_output_mask_storage[ax].values()], dim=ax)
@@ -1521,6 +1523,9 @@ class InferApp:
         assert merged_discrete.ndim == 4
         assert merged_prob.ndim == 4
         assert merged_prob.shape[0] == len(self.configs_labels_dict)
+        
+        del prob_map_list 
+        torch.cuda.empty_cache()
 
         return merged_discrete, merged_prob #merged_prob.unsqueeze(dim=0)
 
@@ -1574,8 +1579,9 @@ class InferApp:
         del probs_tensor
         del affine
         del modif_request
-        gc.collect()
-
+        # gc.collect() #Barely makes a difference. Just remove this for the speedup.
+        torch.cuda.empty_cache() 
+        
         return output 
     
 if __name__ == '__main__':
