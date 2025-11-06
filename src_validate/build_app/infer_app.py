@@ -524,7 +524,7 @@ class InferApp:
     
     def binary_prop_to_model(self, im_dict: dict, is_state: dict | None, init: bool):
         
-        #Prompts and images are provided in L -> R, P -> A, S -> I  (where the image itself was also been correspondingly rotated since array_coords >=0).
+        #Prompts and images are provided in RAS+, L -> R, P -> A, I -> S  (where the image itself was also been correspondingly rotated since array_coords >=0).
         # 
         #Visual inspection of the images provided in the demo demonstrate that the positive directions of the axes in the axial slice corresponds to the R -> L, A -> P convention.
         #but, the ordering of the axes differs. I.e., the y dimension of the image array is the A - P dimension, while the x dimension is the R -> L dimension.
