@@ -243,7 +243,7 @@ def build_sam2_hf(model_id, device, **kwargs): #Slight modification to return so
 
 class InferApp:
  
-    def __init__(self, infer_device):
+    def __init__(self, infer_device, algorithm_state, enable_adaptation, algo_cache_name):
         
         self.sanity_check = False #True
         self.sanity_slice_check = 39
