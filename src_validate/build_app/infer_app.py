@@ -245,6 +245,7 @@ class InferApp:
  
     def __init__(self, 
         infer_device, 
+        dataset_level_schema: dict,
         adaptation_config_name: str, 
         algorithm_state: dict = {},
         enable_adaptation: bool = False,
@@ -260,10 +261,11 @@ class InferApp:
 
         ############ Initialising the inference application #####################
         self.infer_device = infer_device
-
         if self.infer_device.type != "cuda":
             raise RuntimeError("SAM2 should only be run on cuda.")
-
+        self.dataset_level_schema = dataset_level_schema
+        self.semantic_id_dict = dataset_level_schema['segmentation_task_schema']['semantic_id_dict']
+        
         #Setting image configurations which will be used for configuring the sam model. 
         
         #Setting the names for the corresponding indices of the input image arrays (we will assume that the inputs will be oriented in RAS convention)
@@ -434,14 +436,24 @@ class InferApp:
     
     def binary_subject_prep(self, request:dict):
         
-        self.dataset_info = request['dataset_info']
-        if len(self.dataset_info['task_channels']) < 1 or len(self.dataset_info['task_channels']) > 3:
+        if self.dataset_level_schema is None:
+            raise Exception('The dataset level schema must have been set during initialisation!')
+        else:
+            if self.dataset_level_schema['data_schema']['task_channels'] != request['sample_level_schema']['data_schema']['task_channels']:
+                raise Exception('The task channels provided in the sample level schema do not match the ones specified in the dataset level schema! Cannot proceed with inference!')
+        
+        if len(request['sample_level_schema']['data_schema']['task_channels']) < 1 or len(request['sample_level_schema']['data_schema']['task_channels']) > 3:
             raise Exception('The current inference app requires at least one image channel, but can only support up to three channels as input.')
-
+        
         #TODO: Add multi-channel support for segmentation in the inference app.
-        if len(self.dataset_info['task_channels']) != 1:
+        if len(request['sample_level_schema']['data_schema']['task_channels']) != 1:
             raise Exception('The current inference app only supports single channel images for segmentation.')
         
+
+        if request['sample_level_schema']['segmentation_task_schema']['semantic_id_dict'] != self.semantic_id_dict:
+            raise Exception('The semantic id dict provided in the sample level schema does not match the one stored in the algorithm state! Cannot proceed with inference!')
+        
+
         if request['infer_mode'] == 'IS_interactive_edit':
             is_state = request['i_state']
             if all([i is None for i in is_state['interaction_torch_format']['interactions'].values()]) or all([i is None for i in is_state['interaction_torch_format']['interactions_labels'].values()]):
@@ -621,7 +633,9 @@ class InferApp:
 
                 #If it is not CT (i.e. values won't be negative), then we can use the positive voxels to calculate intensity
                 #statistics. This is the most "standard" approach.
-                if self.dataset_info['task_channels'][0] == 'CT':
+                if len(self.dataset_level_schema['data_schema']['task_channels']) != 1:
+                    raise Exception('The current inference app only supports single channel images for segmentation.')
+                if self.dataset_level_schema['data_schema']['task_channels'][0] == 'CT':
                     lower_bound, upper_bound = np.percentile(input_dom_im_backend, self.clip_lower_bound), np.percentile(input_dom_im_backend, self.clip_upper_bound)
                 else:
                     #Else, will use the positive voxels.
@@ -1517,7 +1531,7 @@ class InferApp:
 
         #Now we channel-split the probability map by class.
         prob_map_list = []
-        for label in self.configs_labels_dict.keys():
+        for label in self.semantic_id_dict.keys():
             if label.title() == 'Background':
                 prob_map_list.append(1 - merged_prob)
             else:
@@ -1527,17 +1541,30 @@ class InferApp:
         
         assert merged_discrete.ndim == 4
         assert merged_prob.ndim == 4
-        assert merged_prob.shape[0] == len(self.configs_labels_dict)
+        assert merged_prob.shape[0] == len(self.semantic_id_dict)
+        
+        del prob_map_list 
+        torch.cuda.empty_cache()
 
         return merged_discrete, merged_prob #merged_prob.unsqueeze(dim=0)
 
     def __call__(self, request:dict):
 
-        if len(request['config_labels_dict']) == 2:
+        #Let us extract the sample level schema's semantic id dict.
+        sample_level_schema = request.get('sample_level_schema', None)
+        if sample_level_schema == None:
+            raise Exception('The sample level schema must be provided in the inference request! Cannot proceed with inference!')
+        if sample_level_schema.get('segmentation_task_schema') == None:
+            raise Exception('The segmentation task schema must be provided in the sample level schema of the inference request! Cannot proceed with inference!')
+        if sample_level_schema['segmentation_task_schema'].get('semantic_id_dict') == None:
+            raise Exception('The semantic id dict must be provided in the segmentation task schema of the sample level schema of the inference request! Cannot proceed with inference!')
+        sample_level_semantic_id_dict = sample_level_schema['segmentation_task_schema']['semantic_id_dict']
+
+        if len(sample_level_semantic_id_dict) == 2:
             class_type = 'binary'
-        elif len(request['config_labels_dict']) > 2:
+        elif len(sample_level_semantic_id_dict) > 2:
             class_type = 'multi'
-            raise NotImplementedError 
+            raise NotImplementedError('Multi-class segmentation not implemented.')
         else:
             raise Exception('Should not have received less than two class labels at minimum')
         
@@ -1546,9 +1573,12 @@ class InferApp:
 
         app = self.infer_apps[modif_request['infer_mode']][f'{class_type}_predict']
 
-        #Setting the configs label dictionary for this inference request.
-        self.configs_labels_dict = modif_request['config_labels_dict']
-
+        #Setting the semantic id dictionary for this inference request.
+        if self.semantic_id_dict == None:
+            raise Exception('The semantic id dict should have been set at app initialisation!')
+        else:
+            if self.semantic_id_dict != sample_level_semantic_id_dict:
+                raise Exception('The semantic id dict provided in the request does not match the one stored in the algorithm state! Cannot proceed with inference!')
 
         pred, probs_tensor, affine = app(request=modif_request)
 
@@ -1588,7 +1618,20 @@ class InferApp:
 if __name__ == '__main__':
    
     infer_app = InferApp(
-        torch.device('cuda', index=0)
+        torch.device('cuda', index=0),
+        dataset_level_schema={
+            'data_schema': {
+            'dataset_name':'BraTS2021_t2',
+            'dataset_image_channels': {            
+                "T2w": "0"
+            },
+            'task_channels': ["T2w"]
+            },
+            'segmentation_task_schema': {
+                'semantic_id_dict': {'background':0, 'tumor':1}
+            }
+        },
+        adaptation_config_name=None
         )
 
     infer_app.app_configs()
@@ -1618,13 +1661,13 @@ if __name__ == '__main__':
             'meta_dict':meta,
         },
         'infer_mode':'IS_interactive_init',
-        'config_labels_dict':{'background':0, 'tumor':1},
-        'dataset_info':{
-            'dataset_name':'BraTS2021_t2',
-            'dataset_image_channels': {            
-                "T2w": "0"
+        'sample_level_schema': {
+            'data_schema': {
+                'task_channels': ["T2w"]
             },
-            'task_channels': ["T2w"]
+            'segmentation_task_schema': {
+                'semantic_id_dict': {'background':0, 'tumor':1},
+            }
         },
         'i_state':
         {
@@ -1656,13 +1699,13 @@ if __name__ == '__main__':
             'meta_dict':meta, 
         },
         'infer_mode':'IS_interactive_edit',
-        'config_labels_dict':{'background':0, 'tumor':1},
-        'dataset_info':{
-            'dataset_name':'BraTS2021_t2',
-            'dataset_image_channels': {            
-                "T2w": "0"
+        'sample_level_schema': {
+            'data_schema': {
+                'task_channels': ["T2w"]
             },
-            'task_channels': ["T2w"]
+            'segmentation_task_schema': {
+                'semantic_id_dict': {'background':0, 'tumor':1},
+            }
         },
         'i_state':
         {   
