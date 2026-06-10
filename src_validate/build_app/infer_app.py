@@ -576,6 +576,10 @@ class InferApp:
         if bool(is_state):
             p_dict = (is_state['interaction_torch_format']['interactions'], is_state['interaction_torch_format']['interactions_labels'])
             
+            for ptype in ['points', 'scribbles', 'bboxes']:
+                if p_dict[0].get(ptype) is not None:
+                    p_dict[0][ptype] = [torch.floor(t) for t in p_dict[0][ptype]]
+            
             if p_dict[0]['bboxes'] is not None and p_dict[1]['bboxes_labels'] is not None:
                 #We will remove any background bboxes here. SAM2 cannot handle these (nor does it have any meaning in the context within which they use this.)
                 if not all([i == 1 for i in p_dict[1]['bboxes_labels']]): 
