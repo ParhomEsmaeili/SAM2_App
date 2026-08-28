@@ -439,16 +439,28 @@ class InferApp:
         if self.dataset_level_schema is None:
             raise Exception('The dataset level schema must have been set during initialisation!')
         else:
-            if self.dataset_level_schema['data_schema']['task_channels'] != request['sample_level_schema']['data_schema']['task_channels']:
-                raise Exception('The task channels provided in the sample level schema do not match the ones specified in the dataset level schema! Cannot proceed with inference!')
-        
+            # Sample-level task_channels must be a subset of the dataset-level vocabulary, not
+            # identical to it — a case can legitimately have fewer channels present than the
+            # dataset-wide convention (IS_Validate's generate_sample_level_schema now derives a
+            # genuine per-sample channel list rather than echoing the dataset-level value). set(...)
+            # works whether task_channels is a list of names or a dict keyed by name — both give
+            # the same set of channel names either way.
+            if not set(request['sample_level_schema']['data_schema']['task_channels']) <= set(self.dataset_level_schema['data_schema']['task_channels']):
+                raise Exception('The task channels provided in the sample level schema are not a subset of those specified in the dataset level schema! Cannot proceed with inference!')
+
         if len(request['sample_level_schema']['data_schema']['task_channels']) < 1 or len(request['sample_level_schema']['data_schema']['task_channels']) > 3:
             raise Exception('The current inference app requires at least one image channel, but can only support up to three channels as input.')
         
         #TODO: Add multi-channel support for segmentation in the inference app.
         if len(request['sample_level_schema']['data_schema']['task_channels']) != 1:
             raise Exception('The current inference app only supports single channel images for segmentation.')
-        
+
+        # Cached for use deeper in the call chain (binary_im_to_model_dom), which only has
+        # access to self, not this request — must be this sample's task_channels, not
+        # self.dataset_level_schema's full task vocabulary: a per-sample decision (e.g. "is
+        # this sample's channel CT") has to be made from what this sample actually has.
+        self.current_sample_task_channels = request['sample_level_schema']['data_schema']['task_channels']
+
 
         if request['sample_level_schema']['segmentation_task_schema']['semantic_id_dict'] != self.semantic_id_dict:
             raise Exception('The semantic id dict provided in the sample level schema does not match the one stored in the algorithm state! Cannot proceed with inference!')
@@ -637,9 +649,9 @@ class InferApp:
 
                 #If it is not CT (i.e. values won't be negative), then we can use the positive voxels to calculate intensity
                 #statistics. This is the most "standard" approach.
-                if len(self.dataset_level_schema['data_schema']['task_channels']) != 1:
+                if len(self.current_sample_task_channels) != 1:
                     raise Exception('The current inference app only supports single channel images for segmentation.')
-                if self.dataset_level_schema['data_schema']['task_channels'][0] == 'CT':
+                if 'CT' in self.current_sample_task_channels:
                     lower_bound, upper_bound = np.percentile(input_dom_im_backend, self.clip_lower_bound), np.percentile(input_dom_im_backend, self.clip_upper_bound)
                 else:
                     #Else, will use the positive voxels.
